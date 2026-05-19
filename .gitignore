@@ -142,5 +142,5 @@ audit_logs/
 
 scripts/test_biometric.py
 scripts/test_images/
-zerotrust.db
 scripts/test_audit_chain.py
+scripts/test_risk_engine.py
