@@ -1,104 +1,78 @@
 """
-Biometric verification module — facial recognition for Zero-Trust banking MFA.
-
-Triggered by middleware on risky actions (high-value transfers, rapid sensitive
-endpoint hits, session anomalies). Not a continuous timer loop — verification
-happens when the risk engine demands it.
-
-Framework-agnostic: no FastAPI imports. Pure domain logic that any caller
-(route handler, background worker, CLI) can use.
-
-Implementation backend: DeepFace + OpenCV. Pre-trained models (FaceNet /
-ArcFace / VGG-Face). No model training required.
+Biometric face verification service using DeepFace.
+Enrollment captures a face embedding; verification compares a probe against it.
 """
 from __future__ import annotations
 
-import logging
-from typing import Any
+from pathlib import Path
+from typing import List
+import math
 
+import numpy as np
+from deepface import DeepFace
 from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+from config.settings import get_settings
 
 
 class FaceEmbedding(BaseModel):
-    """A user's stored facial template. Vector representation, not the raw image."""
-
     user_id: str
-    vector: list[float]
-    model_name: str = Field(..., description="DeepFace backbone used: Facenet, ArcFace, etc.")
-    created_at: str  # ISO 8601 timestamp
+    embedding: List[float] = Field(..., description="Face embedding vector (Facenet512 = 512 dims)")
+    model_name: str = "Facenet512"
 
 
 class VerificationResult(BaseModel):
-    """Outcome of a face-match attempt."""
-
-    matched: bool
+    verified: bool
     confidence: float = Field(..., ge=0.0, le=1.0)
-    distance: float = Field(..., description="Embedding distance; lower = closer match")
-    threshold: float = Field(..., description="Distance threshold that decides matched=True")
-    model_name: str
-
-
-class BiometricError(Exception):
-    """Raised on enrolment or verification failure (no face, multiple faces, IO, etc.)."""
+    distance: float
+    threshold: float
 
 
 class BiometricService:
-    """
-    Face enrolment and verification.
+    """Framework-agnostic face verification. DB wiring comes later."""
 
-    Backed by DeepFace. Each user has exactly one stored embedding; re-enrolment
-    overwrites the previous template. Verification compares a fresh capture
-    against the stored embedding and returns a structured result.
-    """
+    def __init__(self) -> None:
+        self.settings = get_settings()
+        self.model_name = "Facenet512"
+        self.detector_backend = "opencv"
 
-    def __init__(
-        self,
-        model_name: str = "Facenet",
-        detector_backend: str = "opencv",
-        match_threshold: float = 0.6,
-    ) -> None:
-        """
-        Args:
-            model_name: DeepFace recognition model (Facenet, ArcFace, VGG-Face, ...).
-            detector_backend: Face detector (opencv, mtcnn, retinaface, ...).
-            match_threshold: Distance below which a verification counts as a match.
-        """
-        self._model_name = model_name
-        self._detector_backend = detector_backend
-        self._match_threshold = match_threshold
-
-    def enroll(self, user_id: str, image_bytes: bytes) -> FaceEmbedding:
-        """
-        Compute and return a face embedding for the given user.
-
-        The caller is responsible for persisting the returned embedding.
-        Raises BiometricError if no face is detected, multiple faces are
-        detected, or the underlying recognition library fails.
-        """
-        raise NotImplementedError("DeepFace integration pending — commit #8")
-
-    def verify(
-        self,
-        image_bytes: bytes,
-        stored_embedding: FaceEmbedding,
-    ) -> VerificationResult:
-        """
-        Compare a fresh capture against the user's stored embedding.
-
-        Used by the risk middleware when a step-up challenge fires (e.g. a
-        large transfer or a sudden burst of sensitive endpoint hits).
-
-        Raises BiometricError on detection or IO failure.
-        """
-        raise NotImplementedError("DeepFace integration pending — commit #8")
-
-    def _extract_embedding(self, image_bytes: bytes) -> list[float]:
-        """Internal: run the image through DeepFace and return the raw embedding vector."""
-        raise NotImplementedError("DeepFace integration pending — commit #8")
+    def _extract_embedding(self, image_path: str) -> List[float]:
+        path = Path(image_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Image not found: {image_path}")
+        reps = DeepFace.represent(
+            img_path=str(path),
+            model_name=self.model_name,
+            detector_backend=self.detector_backend,
+            enforce_detection=True,
+        )
+        if not reps:
+            raise ValueError("No face detected in image")
+        return reps[0]["embedding"]
 
     @staticmethod
-    def _embedding_distance(a: list[float], b: list[float]) -> float:
-        """Internal: cosine or euclidean distance between two embeddings."""
-        raise NotImplementedError("DeepFace integration pending — commit #8")
+    def _embedding_distance(a: List[float], b: List[float]) -> float:
+        """Cosine distance: 0.0 = identical, 1.0 = orthogonal."""
+        va, vb = np.array(a), np.array(b)
+        denom = (np.linalg.norm(va) * np.linalg.norm(vb))
+        if denom == 0:
+            return 1.0
+        cosine_sim = float(np.dot(va, vb) / denom)
+        return 1.0 - cosine_sim
+
+    def enroll(self, user_id: str, image_path: str) -> FaceEmbedding:
+        embedding = self._extract_embedding(image_path)
+        return FaceEmbedding(user_id=user_id, embedding=embedding, model_name=self.model_name)
+
+    def verify(self, stored: FaceEmbedding, probe_image_path: str) -> VerificationResult:
+        probe_embedding = self._extract_embedding(probe_image_path)
+        distance = self._embedding_distance(stored.embedding, probe_embedding)
+        threshold = self.settings.biometric_match_threshold
+        verified = distance <= threshold
+        confidence = max(0.0, min(1.0, 1.0 - distance))
+        return VerificationResult(
+            verified=verified,
+            confidence=confidence,
+            distance=distance,
+            threshold=threshold,
+        )
