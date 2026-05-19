@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
 
     # Biometric
-    biometric_match_threshold: float = 0.6
+    biometric_match_threshold: float = 0.3
     biometric_reverify_interval_seconds: int = 30
 
     # Risk Engine
