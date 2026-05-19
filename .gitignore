@@ -142,3 +142,4 @@ audit_logs/
 
 scripts/test_biometric.py
 scripts/test_images/
+zerotrust.db
