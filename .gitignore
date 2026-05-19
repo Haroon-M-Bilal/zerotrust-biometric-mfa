@@ -139,3 +139,6 @@ audit_logs/
 *.temp
 *.bak
 *.old
+
+scripts/test_biometric.py
+scripts/test_images/
