@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    app_name: str = "Zero-Trust Biometric MFA"
+    app_name: str = "Zero-Trust Banking MFA"
     app_version: str = "0.1.0"
     debug: bool = True
 
