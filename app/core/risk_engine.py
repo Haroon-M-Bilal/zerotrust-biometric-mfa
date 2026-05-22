@@ -3,14 +3,15 @@ Composite risk scoring for access decisions.
 Combines biometric confidence, IP/device/time signals, and transaction context
 into a single 0.0–1.0 score, mapped to ALLOW / CHALLENGE / DENY.
 
-Weights are tunable via settings. Signals are normalized to 0.0 (safe) – 1.0 (risky)
-before weighted combination.
+Hybrid mode: when the trained Random Forest classifier is available, its
+fraud probability is blended with the rule-based score (default 60% rules,
+40% ML). Set use_ml=False to use rules only.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -24,13 +25,16 @@ class Decision(str, Enum):
 
 
 class RiskSignals(BaseModel):
-    """Raw signals fed into the engine. All optional — engine handles missing data."""
-    biometric_confidence: float | None = Field(None, ge=0.0, le=1.0, description="0=no face match, 1=perfect")
+    biometric_confidence: float | None = Field(None, ge=0.0, le=1.0)
     ip_known: bool | None = None
     device_known: bool | None = None
     request_time: datetime | None = None
     transaction_amount: float | None = Field(None, ge=0.0)
     requests_last_minute: int | None = Field(None, ge=0)
+    # Extra signals consumed only by the ML classifier
+    originator_balance: float | None = Field(None, ge=0.0)
+    destination_known: bool | None = None
+    is_transfer: bool | None = None
 
 
 class RiskAssessment(BaseModel):
@@ -38,9 +42,10 @@ class RiskAssessment(BaseModel):
     decision: Decision
     component_scores: dict[str, float]
     reasons: list[str]
+    rule_score: float
+    ml_score: float | None = None
 
 
-# Weights — sum to 1.0. Tunable later via settings.
 WEIGHTS = {
     "biometric": 0.35,
     "ip":        0.15,
@@ -50,67 +55,63 @@ WEIGHTS = {
     "velocity":  0.10,
 }
 
+# Hybrid blend: rule_weight + ml_weight = 1.0
+RULE_BLEND = 0.7
+ML_BLEND = 0.3
+
 
 class RiskEngine:
-    """Stateless. Single instance reusable across requests."""
-
-    def __init__(self) -> None:
+    def __init__(self, use_ml: bool = True) -> None:
         self.settings = get_settings()
+        self.classifier = None
+        if use_ml:
+            try:
+                from app.ml.risk_classifier import RiskClassifier
+                self.classifier = RiskClassifier.load()
+            except (FileNotFoundError, ImportError):
+                self.classifier = None  # fallback to rules-only
 
-    # ---- Per-signal scorers (each returns 0.0 safe → 1.0 risky) ----
-
-    @staticmethod
-    def _score_biometric(confidence: float | None) -> float:
-        if confidence is None:
-            return 0.5  # unknown = mid-risk
-        return max(0.0, min(1.0, 1.0 - confidence))
-
-    @staticmethod
-    def _score_ip(ip_known: bool | None) -> float:
-        if ip_known is None:
-            return 0.5
-        return 0.0 if ip_known else 0.8
+    # ---- Per-signal rule scorers (0.0 safe → 1.0 risky) ----
 
     @staticmethod
-    def _score_device(device_known: bool | None) -> float:
-        if device_known is None:
-            return 0.5
-        return 0.0 if device_known else 0.8
+    def _score_biometric(c: float | None) -> float:
+        return 0.5 if c is None else max(0.0, min(1.0, 1.0 - c))
 
     @staticmethod
-    def _score_time(request_time: datetime | None) -> float:
-        """Off-hours (midnight–6 AM local) = elevated risk."""
-        if request_time is None:
+    def _score_ip(known: bool | None) -> float:
+        return 0.5 if known is None else (0.0 if known else 0.8)
+
+    @staticmethod
+    def _score_device(known: bool | None) -> float:
+        return 0.5 if known is None else (0.0 if known else 0.8)
+
+    @staticmethod
+    def _score_time(t: datetime | None) -> float:
+        if t is None:
             return 0.2
-        h = request_time.hour
-        if 0 <= h < 6:
-            return 0.7
-        if 6 <= h < 9 or 22 <= h <= 23:
-            return 0.3
+        h = t.hour
+        if 0 <= h < 6:   return 0.7
+        if 6 <= h < 9 or 22 <= h <= 23: return 0.3
         return 0.1
 
     @staticmethod
     def _score_amount(amount: float | None) -> float:
-        """Log-scaled: $0 = 0.0, $1k ≈ 0.3, $10k ≈ 0.6, $100k+ = 1.0."""
         if amount is None or amount <= 0:
             return 0.0
         if amount >= 100_000:
             return 1.0
-        # log10(amount) / log10(100_000) ≈ 0..1 for $1..$100k
         import math
         return max(0.0, min(1.0, math.log10(max(amount, 1.0)) / 5.0))
 
     @staticmethod
-    def _score_velocity(requests_last_minute: int | None) -> float:
-        if requests_last_minute is None:
+    def _score_velocity(rpm: int | None) -> float:
+        if rpm is None:
             return 0.0
-        if requests_last_minute >= 30:
+        if rpm >= 30:
             return 1.0
-        return min(1.0, requests_last_minute / 30.0)
+        return min(1.0, rpm / 30.0)
 
-    # ---- Composite ----
-
-    def assess(self, signals: RiskSignals) -> RiskAssessment:
+    def _rule_score(self, signals: RiskSignals) -> tuple[float, dict[str, float]]:
         components = {
             "biometric": self._score_biometric(signals.biometric_confidence),
             "ip":        self._score_ip(signals.ip_known),
@@ -120,26 +121,65 @@ class RiskEngine:
             "velocity":  self._score_velocity(signals.requests_last_minute),
         }
         score = sum(components[k] * WEIGHTS[k] for k in components)
-        score = max(0.0, min(1.0, score))
+        return max(0.0, min(1.0, score)), components
 
-        if score < self.settings.risk_threshold_low:
+    def _ml_score(self, signals: RiskSignals) -> float | None:
+        """Run RF classifier; return None if unavailable or insufficient signals."""
+        if self.classifier is None:
+            return None
+        if signals.transaction_amount is None:
+            return None
+        import math
+        amount = max(signals.transaction_amount, 0.0)
+        origin_bal = signals.originator_balance if signals.originator_balance is not None else amount + 1.0
+        hour = signals.request_time.hour if signals.request_time else 12
+        is_transfer = 1 if signals.is_transfer else 0
+        dest_new = 0 if signals.destination_known else 1
+        balance_drained = 1 if (origin_bal > 0 and amount >= origin_bal * 0.95) else 0
+
+        features = {
+            "amount_log":        math.log10(amount + 1),
+            "hour_of_day":       hour,
+            "is_off_hours":      1 if 0 <= hour < 6 else 0,
+            "is_transfer":       is_transfer,
+            "balance_drained":   balance_drained,
+            "amount_to_balance": amount / (origin_bal + 1.0),
+            "dest_new":          dest_new,
+        }
+        try:
+            return self.classifier.predict_proba(features)
+        except Exception:
+            return None
+
+    def assess(self, signals: RiskSignals) -> RiskAssessment:
+        rule_score, components = self._rule_score(signals)
+        ml_score = self._ml_score(signals)
+
+        if ml_score is not None:
+            final_score = RULE_BLEND * rule_score + ML_BLEND * ml_score
+        else:
+            final_score = rule_score
+        final_score = max(0.0, min(1.0, final_score))
+
+        if final_score < self.settings.risk_threshold_low:
             decision = Decision.ALLOW
-        elif score < self.settings.risk_threshold_high:
+        elif final_score < self.settings.risk_threshold_high:
             decision = Decision.CHALLENGE
         else:
             decision = Decision.DENY
 
-        reasons = self._explain_components(components)
+        reasons = self._explain(components, ml_score)
         return RiskAssessment(
-            score=round(score, 4),
+            score=round(final_score, 4),
             decision=decision,
             component_scores={k: round(v, 4) for k, v in components.items()},
             reasons=reasons,
+            rule_score=round(rule_score, 4),
+            ml_score=round(ml_score, 4) if ml_score is not None else None,
         )
 
     @staticmethod
-    def _explain_components(components: dict[str, float]) -> list[str]:
-        """Human-readable reasons for the top risky components (score >= 0.4)."""
+    def _explain(components: dict[str, float], ml_score: float | None) -> list[str]:
         labels = {
             "biometric": "low biometric confidence",
             "ip":        "unrecognized IP address",
@@ -150,4 +190,7 @@ class RiskEngine:
         }
         flagged = [(k, v) for k, v in components.items() if v >= 0.4]
         flagged.sort(key=lambda kv: kv[1], reverse=True)
-        return [f"{labels[k]} ({v:.2f})" for k, v in flagged]
+        reasons = [f"{labels[k]} ({v:.2f})" for k, v in flagged]
+        if ml_score is not None and ml_score >= 0.5:
+            reasons.insert(0, f"ML classifier flagged transaction (P_fraud={ml_score:.2f})")
+        return reasons
