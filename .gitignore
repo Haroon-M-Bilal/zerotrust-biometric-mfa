@@ -91,7 +91,6 @@ lm-studio-models/
 
 # --- Datasets (too large for Git) ---
 datasets/
-data/
 lfw/
 *.tar.gz
 *.zip
@@ -144,3 +143,7 @@ scripts/test_biometric.py
 scripts/test_images/
 scripts/test_audit_chain.py
 scripts/test_risk_engine.py
+
+data/raw/
+data/processed/
+*.csv
