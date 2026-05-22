@@ -147,3 +147,6 @@ scripts/test_risk_engine.py
 data/raw/
 data/processed/
 *.csv
+
+
+data/models/
