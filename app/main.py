@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import auth_routes
+from app.db.database import init_db
 from config.settings import get_settings
 
 settings = get_settings()
@@ -13,8 +15,9 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown hooks. Place DB connections, model loads, etc. here later."""
-    # Startup
+    """Startup and shutdown hooks."""
+    # Startup: ensure DB tables exist
+    init_db()
     yield
     # Shutdown
 
@@ -33,6 +36,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# API routers
+app.include_router(auth_routes.router)
 
 
 @app.get("/health", tags=["system"])
