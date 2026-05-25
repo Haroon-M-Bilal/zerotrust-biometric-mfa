@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     biometric_reverify_interval_seconds: int = 30
 
     # Risk Engine
-    risk_threshold_low: float = 0.2
+    risk_threshold_low: float = 0.15
     risk_threshold_high: float = 0.7
 
     # Audit
