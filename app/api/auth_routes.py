@@ -111,7 +111,7 @@ async def register(
 
     face_path = _save_uploaded_face(face, user.id)
     try:
-        enrollment = biometric.enroll(user_id=str(user.id), image_path=str(face_path))
+        enrollment = biometric.enroll(user_id=str(user.id), image_path=str(face_path), require_liveness=True)
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Face enrollment failed: {e}")

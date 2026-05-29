@@ -252,7 +252,7 @@ async def verify_challenge(
 
     face_path = _save_face(face, user.id)
     stored = FaceEmbedding(user_id=str(user.id), embedding=user.face_embedding, model_name="Facenet512")
-    result = biometric.verify(stored, str(face_path))
+    result = biometric.verify(stored, str(face_path), require_liveness=True)
 
     txn = db.query(Transaction).filter(Transaction.id == pending["transaction_id"]).first()
     if txn is None:
