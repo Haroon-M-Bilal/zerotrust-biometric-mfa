@@ -87,12 +87,15 @@ class AuditChain:
             try:
                 ctx = AccessDecisionContext(
                     user_id=str(user_id) if user_id is not None else "anonymous",
+                    resource=f"banking:{event_type}",
+                    action=event_type,
                     decision=decision,
                     risk_score=risk_score if risk_score is not None else 0.0,
-                    biometric_confidence=biometric_confidence,
-                    event_type=event_type,
-                    ip_address=ip_address,
-                    extra_context=context or {},
+                    biometric_confidence=biometric_confidence if biometric_confidence is not None else 0.0,
+                    signals={
+                        "ip_address": ip_address,
+                        **(context or {}),
+                    },
                 )
                 result = await self.llm.explain(ctx)
                 explanation = result.explanation
