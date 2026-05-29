@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Zero-Trust Banking MFA</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0; padding: 0;
+    background: #0f172a; color: #e2e8f0; min-height: 100vh;
+  }
+  header {
+    background: #1e293b; padding: 16px 24px;
+    border-bottom: 1px solid #334155;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  header h1 { margin: 0; font-size: 18px; color: #38bdf8; }
+  header nav button {
+    background: transparent; color: #94a3b8; border: none;
+    padding: 8px 16px; cursor: pointer; font-size: 14px;
+  }
+  header nav button.active { color: #38bdf8; border-bottom: 2px solid #38bdf8; }
+  header nav button:hover { color: #e2e8f0; }
+  #user-status { font-size: 13px; color: #94a3b8; }
+  main { max-width: 800px; margin: 24px auto; padding: 0 24px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .card {
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 8px; padding: 24px; margin-bottom: 16px;
+  }
+  .card h2 { margin: 0 0 16px 0; color: #38bdf8; font-size: 20px; }
+  label { display: block; margin-bottom: 4px; font-size: 13px; color: #cbd5e1; }
+  input, button {
+    width: 100%; padding: 10px 12px; margin-bottom: 12px;
+    border-radius: 6px; border: 1px solid #475569;
+    background: #0f172a; color: #e2e8f0; font-size: 14px;
+  }
+  input[type=file] { padding: 6px; }
+  button {
+    background: #0ea5e9; color: white; border: none;
+    cursor: pointer; font-weight: 500;
+  }
+  button:hover { background: #0284c7; }
+  button:disabled { background: #475569; cursor: not-allowed; }
+  button.danger { background: #dc2626; }
+  button.danger:hover { background: #b91c1c; }
+  .result {
+    padding: 12px; border-radius: 6px; margin-top: 12px;
+    font-family: 'Consolas', monospace; font-size: 13px;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .result.success { background: #064e3b; border: 1px solid #047857; color: #6ee7b7; }
+  .result.error { background: #7f1d1d; border: 1px solid #dc2626; color: #fca5a5; }
+  .result.warning { background: #78350f; border: 1px solid #f59e0b; color: #fcd34d; }
+  .audit-entry {
+    background: #0f172a; border: 1px solid #334155;
+    border-radius: 6px; padding: 12px; margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .audit-entry .meta { color: #94a3b8; font-size: 12px; margin-bottom: 6px; }
+  .audit-entry .decision { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 11px; }
+  .decision.ALLOW { background: #064e3b; color: #6ee7b7; }
+  .decision.CHALLENGE { background: #78350f; color: #fcd34d; }
+  .decision.DENY { background: #7f1d1d; color: #fca5a5; }
+  .audit-entry .explanation {
+    margin-top: 8px; padding: 8px; background: #1e293b;
+    border-left: 3px solid #38bdf8; font-style: italic; color: #cbd5e1;
+  }
+  .hash { font-family: 'Consolas', monospace; color: #64748b; font-size: 11px; }
+  video, canvas {
+    width: 100%; max-width: 320px; border-radius: 6px;
+    background: #0f172a; margin-bottom: 12px;
+  }
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; }
+  .integrity-banner {
+    padding: 16px; border-radius: 6px; margin-bottom: 16px;
+    font-weight: 600; text-align: center;
+  }
+  .integrity-banner.valid { background: #064e3b; color: #6ee7b7; border: 1px solid #047857; }
+  .integrity-banner.broken { background: #7f1d1d; color: #fca5a5; border: 1px solid #dc2626; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ Zero-Trust Banking MFA</h1>
+  <nav>
+    <button data-view="register" class="active">Register</button>
+    <button data-view="login">Login</button>
+    <button data-view="transfer">Transfer</button>
+    <button data-view="admin">Audit</button>
+  </nav>
+  <div id="user-status">Not logged in</div>
+</header>
+
+<main>
+  <!-- REGISTER -->
+  <section class="view active" id="view-register">
+    <div class="card">
+      <h2>Create Account</h2>
+      <label>Username</label>
+      <input id="reg-username" placeholder="haroon" />
+      <label>Email</label>
+      <input id="reg-email" type="email" placeholder="haroon@bank.com" />
+      <label>Password</label>
+      <input id="reg-password" type="password" placeholder="min 6 chars" />
+      <label>Face Capture</label>
+      <video id="reg-video" autoplay muted playsinline></video>
+      <canvas id="reg-canvas" style="display:none"></canvas>
+      <div class="row">
+        <button id="reg-snap">📷 Capture Face</button>
+        <button id="reg-submit" disabled>Register</button>
+      </div>
+      <div id="reg-result"></div>
+    </div>
+  </section>
+
+  <!-- LOGIN -->
+  <section class="view" id="view-login">
+    <div class="card">
+      <h2>Sign In</h2>
+      <label>Username</label>
+      <input id="login-username" />
+      <label>Password</label>
+      <input id="login-password" type="password" />
+      <button id="login-submit">Login</button>
+      <div id="login-result"></div>
+    </div>
+  </section>
+
+  <!-- TRANSFER -->
+  <section class="view" id="view-transfer">
+    <div class="card">
+      <h2>Send Money</h2>
+      <label>Recipient Account Number</label>
+      <input id="txn-to" placeholder="10-digit account number" />
+      <label>Amount (USD)</label>
+      <input id="txn-amount" type="number" min="0.01" step="0.01" />
+      <label><input type="checkbox" id="txn-off-hours" style="width:auto;margin-right:8px"/> Simulate off-hours (demo)</label>
+      <button id="txn-submit">Send Transfer</button>
+      <div id="txn-result"></div>
+    </div>
+
+    <div class="card" id="challenge-card" style="display:none">
+      <h2>⚠️ Additional Verification Required</h2>
+      <p style="color:#fcd34d">Risk threshold exceeded. Please re-verify your face to authorize this transaction.</p>
+      <video id="ch-video" autoplay muted playsinline></video>
+      <canvas id="ch-canvas" style="display:none"></canvas>
+      <div class="row">
+        <button id="ch-snap">📷 Capture Face</button>
+        <button id="ch-submit" disabled>Verify & Complete</button>
+      </div>
+      <div id="ch-result"></div>
+    </div>
+  </section>
+
+  <!-- ADMIN -->
+  <section class="view" id="view-admin">
+    <div class="card">
+      <h2>Audit Log</h2>
+      <div class="row">
+        <button id="audit-refresh">🔄 Refresh</button>
+        <button id="audit-verify">🔐 Verify Chain Integrity</button>
+      </div>
+      <div id="integrity-result"></div>
+      <div id="audit-list"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const API = '';
+let accessToken = null;
+let regBlob = null;
+let chBlob = null;
+let pendingChallengeToken = null;
+
+// ---- View switching ----
+document.querySelectorAll('header nav button').forEach(btn => {
+  btn.addEventListener('click', () => switchView(btn.dataset.view));
+});
+function switchView(name) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('header nav button').forEach(b => b.classList.remove('active'));
+  document.getElementById('view-' + name).classList.add('active');
+  document.querySelector(`header nav button[data-view="${name}"]`).classList.add('active');
+  if (name === 'admin') loadAudit();
+  if (name === 'register' || name === 'transfer') ensureCameras(name);
+}
+
+// ---- Camera helpers ----
+async function startCamera(videoEl) {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    videoEl.srcObject = stream;
+  } catch (e) {
+    console.error('Camera error:', e);
+  }
+}
+function captureFrame(videoEl, canvasEl) {
+  canvasEl.width = videoEl.videoWidth;
+  canvasEl.height = videoEl.videoHeight;
+  canvasEl.getContext('2d').drawImage(videoEl, 0, 0);
+  return new Promise(res => canvasEl.toBlob(res, 'image/jpeg', 0.9));
+}
+async function ensureCameras(view) {
+  if (view === 'register') await startCamera(document.getElementById('reg-video'));
+  if (view === 'transfer') await startCamera(document.getElementById('ch-video'));
+}
+
+// ---- Register ----
+document.getElementById('reg-snap').addEventListener('click', async () => {
+  regBlob = await captureFrame(document.getElementById('reg-video'), document.getElementById('reg-canvas'));
+  showResult('reg-result', 'success', 'Face captured. Ready to register.');
+  document.getElementById('reg-submit').disabled = false;
+});
+document.getElementById('reg-submit').addEventListener('click', async () => {
+  const fd = new FormData();
+  fd.append('username', document.getElementById('reg-username').value);
+  fd.append('email', document.getElementById('reg-email').value);
+  fd.append('password', document.getElementById('reg-password').value);
+  fd.append('face', regBlob, 'face.jpg');
+  const r = await fetch(`${API}/auth/register`, { method: 'POST', body: fd });
+  const data = await r.json();
+  if (r.ok) {
+    showResult('reg-result', 'success', `✅ Registered.\nAccount: ${data.account_number}\nBalance: $${data.balance}`);
+  } else {
+    showResult('reg-result', 'error', `❌ ${data.detail || JSON.stringify(data)}`);
+  }
+});
+
+// ---- Login ----
+document.getElementById('login-submit').addEventListener('click', async () => {
+  const r = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: document.getElementById('login-username').value,
+      password: document.getElementById('login-password').value,
+    }),
+  });
+  const data = await r.json();
+  if (r.ok) {
+    accessToken = data.access_token;
+    document.getElementById('user-status').textContent = `Signed in as ${document.getElementById('login-username').value}`;
+    showResult('login-result', 'success', `✅ Logged in. Token expires in ${data.expires_in}s.`);
+  } else {
+    showResult('login-result', 'error', `❌ ${data.detail || JSON.stringify(data)}`);
+  }
+});
+
+// ---- Transfer ----
+document.getElementById('txn-submit').addEventListener('click', async () => {
+  if (!accessToken) { showResult('txn-result', 'error', '❌ Please log in first.'); return; }
+  const body = {
+    to_account: document.getElementById('txn-to').value,
+    amount: parseFloat(document.getElementById('txn-amount').value),
+    force_off_hours: document.getElementById('txn-off-hours').checked,
+  };
+  const r = await fetch(`${API}/transactions/transfer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + accessToken },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  if (!r.ok) { showResult('txn-result', 'error', `❌ ${data.detail || JSON.stringify(data)}`); return; }
+  const cls = data.decision === 'ALLOW' ? 'success' : (data.decision === 'DENY' ? 'error' : 'warning');
+  const msg = `Decision: ${data.decision}\nRisk: ${data.risk_score} (rules ${data.rule_score}, ML ${data.ml_score})\nReasons: ${(data.reasons || []).join(', ') || 'none'}\n${data.message}`;
+  showResult('txn-result', cls, msg);
+  if (data.decision === 'CHALLENGE' && data.challenge_token) {
+    pendingChallengeToken = data.challenge_token;
+    document.getElementById('challenge-card').style.display = 'block';
+  } else {
+    document.getElementById('challenge-card').style.display = 'none';
+  }
+});
+document.getElementById('ch-snap').addEventListener('click', async () => {
+  chBlob = await captureFrame(document.getElementById('ch-video'), document.getElementById('ch-canvas'));
+  showResult('ch-result', 'success', 'Face captured. Ready to verify.');
+  document.getElementById('ch-submit').disabled = false;
+});
+document.getElementById('ch-submit').addEventListener('click', async () => {
+  const fd = new FormData();
+  fd.append('challenge_token', pendingChallengeToken);
+  fd.append('face', chBlob, 'verify.jpg');
+  const r = await fetch(`${API}/transactions/verify-challenge`, {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + accessToken },
+    body: fd,
+  });
+  const data = await r.json();
+  const cls = data.status === 'completed' ? 'success' : 'error';
+  showResult('ch-result', cls, `${data.message}\nDistance: ${data.biometric_distance?.toFixed(4)}\nConfidence: ${data.biometric_confidence?.toFixed(4)}`);
+  if (data.status === 'completed') {
+    pendingChallengeToken = null;
+    document.getElementById('challenge-card').style.display = 'none';
+  }
+});
+
+// ---- Admin ----
+async function loadAudit() {
+  if (!accessToken) { document.getElementById('audit-list').innerHTML = '<div class="result error">Please log in as admin.</div>'; return; }
+  const r = await fetch(`${API}/admin/audit?limit=20`, { headers: { 'Authorization': 'Bearer ' + accessToken } });
+  if (!r.ok) {
+    const e = await r.json();
+    document.getElementById('audit-list').innerHTML = `<div class="result error">❌ ${e.detail}</div>`;
+    return;
+  }
+  const data = await r.json();
+  const list = document.getElementById('audit-list');
+  list.innerHTML = `<p style="color:#94a3b8;font-size:13px">${data.total} total entries, showing ${data.returned}</p>` +
+    data.entries.map(e => `
+      <div class="audit-entry">
+        <div class="meta">
+          #${e.id} · ${e.timestamp} · ${e.event_type} ·
+          <span class="decision ${e.decision}">${e.decision}</span> ·
+          risk ${e.risk_score?.toFixed(2) ?? '—'}
+        </div>
+        ${e.llm_explanation ? `<div class="explanation">${e.llm_explanation}</div>` : ''}
+        <div class="hash">hash: ${e.entry_hash.slice(0, 16)}… · prev: ${e.prev_hash ? e.prev_hash.slice(0, 16) + '…' : '—'}</div>
+      </div>
+    `).join('');
+}
+document.getElementById('audit-refresh').addEventListener('click', loadAudit);
+document.getElementById('audit-verify').addEventListener('click', async () => {
+  if (!accessToken) return;
+  const r = await fetch(`${API}/admin/audit/verify`, { headers: { 'Authorization': 'Bearer ' + accessToken } });
+  const data = await r.json();
+  const box = document.getElementById('integrity-result');
+  if (data.valid) {
+    box.innerHTML = `<div class="integrity-banner valid">✅ ${data.message}</div>`;
+  } else {
+    box.innerHTML = `<div class="integrity-banner broken">🚨 ${data.message}</div>`;
+  }
+});
+
+// ---- Util ----
+function showResult(id, cls, text) {
+  const el = document.getElementById(id);
+  el.innerHTML = `<div class="result ${cls}">${text}</div>`;
+}
+
+// Start camera on initial register view
+ensureCameras('register');
+</script>
+</body>
+</html>

@@ -1,10 +1,15 @@
 """
 FastAPI entry point for the Zero-Trust Biometric MFA system.
 Wires together middleware, routes, and lifecycle hooks.
+Serves the frontend SPA at /.
 """
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api import auth_routes, transaction_routes, admin_routes
 from app.db.database import init_db
@@ -15,11 +20,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown hooks."""
-    # Startup: ensure DB tables exist
     init_db()
     yield
-    # Shutdown
 
 
 app = FastAPI(
@@ -45,19 +47,14 @@ app.include_router(admin_routes.router)
 
 @app.get("/health", tags=["system"])
 async def health_check() -> dict:
-    """Liveness probe. Returns app metadata and confirms the service is up."""
-    return {
-        "status": "ok",
-        "app": settings.app_name,
-        "version": settings.app_version,
-    }
+    return {"status": "ok", "app": settings.app_name, "version": settings.app_version}
 
 
-@app.get("/", tags=["system"])
-async def root() -> dict:
-    """Root endpoint. Points clients to the interactive docs."""
-    return {
-        "message": f"{settings.app_name} is running",
-        "docs": "/docs",
-        "health": "/health",
-    }
+# ---- Static frontend ----
+FRONTEND_DIR = Path(__file__).resolve().parents[1] / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        return FileResponse(FRONTEND_DIR / "index.html")
